@@ -1,6 +1,6 @@
 import os
 import logging
-from typing import List, Dict, Any
+from typing import List, Dict, Any , Generator
 from openai import OpenAI, APIError
 from pinecone import Pinecone, PineconeException
 from neo4j import GraphDatabase
@@ -9,6 +9,7 @@ from dotenv import load_dotenv
 import httpx
 import redis
 import json
+
 # --- 1. Basic Setup ---
 load_dotenv()
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -144,59 +145,89 @@ class HybridRAG:
             logging.error(f"Neo4j query failed: {e}")
             return []
 
-    def build_enhanced_prompt(self, user_query: str, pinecone_matches: list, graph_facts: list) -> list:
-        """Build an enhanced, structured chat prompt."""
-        # --- 3. Enhanced Prompt ---
-        system_content = """You are an expert travel assistant for Vietnam.
-Your goal is to provide helpful, concise, and fact-based answers.
-- Use the **CONTEXT** provided below to answer the user's **QUERY**.
-- The context includes semantic matches from a vector database and factual relationships from a graph database.
-- **Synthesize information from both sources** to create a complete answer.
-- **Cite your sources** by mentioning the node IDs (e.g., `city_hanoi`) in parentheses after the name of a place.
-- If the context does not contain enough information to answer, state that you cannot answer fully and explain what information is missing. **Do not make up information.**
-- Format your response using Markdown for readability. Use lists or bold text where appropriate."""
+    def _get_search_summary(self, query: str, pinecone_matches: list, graph_facts: list) -> str:
+        """Summarizes retrieved context using an LLM call."""
+        if not pinecone_matches and not graph_facts:
+            return "No relevant information was found in the knowledge base."
 
-        context_str = "## CONTEXT\n\n"
-        if pinecone_matches:
-            context_str += "### Top Semantic Matches:\n"
-            for m in pinecone_matches:
-                meta = m.get('metadata', {})
-                context_str += f"- **{meta.get('name', 'N/A')}** (`{m['id']}`): A {meta.get('type', 'N/A')} in {meta.get('city', 'N/A')}.\n"
-        else:
-            context_str += "No semantic matches found.\n"
-
-        if graph_facts:
-            context_str += "\n### Related Factual Connections:\n"
-            for f in graph_facts:
-                context_str += f"- The entity `{f['source_id']}` has a relation `{f['relation']}` with **{f.get('target_name', 'N/A')}** (`{f['target_id']}`), which is described as: {f['target_desc']}\n"
-        else:
-            context_str += "\nNo factual connections found.\n"
-
-        user_content = f"{context_str}\n\n## QUERY\n\n{user_query}"
-
-        return [
-            {"role": "system", "content": system_content},
-            {"role": "user", "content": user_content}
-        ]
-
-    def get_answer(self, query: str) -> str:
-        """Main method to get an answer from the hybrid RAG system."""
-        matches = self.pinecone_query(query, top_k=3)
-        match_ids = [m["id"] for m in matches]
-        graph_facts = self.fetch_graph_context(match_ids)
-        prompt = self.build_enhanced_prompt(query, matches, graph_facts)
-
+        # Combine the retrieved info into a single text block
+        summary_context = "### Pinecone Semantic Search Results:\n"
+        for match in pinecone_matches:
+            meta = match.get('metadata', {})
+            summary_context += f"- ID: {meta.get('id', 'N/A')}, Name: {meta.get('name', 'N/A')}, Type: {meta.get('type', 'N/A')}\n"
+        
+        summary_context += "\n### Neo4j Graph Facts:\n"
+        for fact in graph_facts:
+            summary_context += f"- The entity `{fact['source_id']}` has a `{fact['relation']}` relation with `{fact['target_name']}` (`{fact['target_id']}`).\n"
+        
         try:
             response = self.openai_client.chat.completions.create(
-                model=self.chat_model,
-                messages=prompt,
-                temperature=0.1,
-                max_tokens=800
+                model="gpt-4o-mini",
+                messages=[
+                    {"role": "system", "content": "You are a highly skilled summarization assistant. Your task is to synthesize the provided search results into a concise, single paragraph. Focus only on the information that is most relevant to answering the user's query."},
+                    {"role": "user", "content": f"Please summarize the following information in the context of this user query: '{query}'\n\n### Search Results:\n{summary_context}"}
+                ],
+                temperature=0.0
             )
-            return response.choices[0].message.content
+            summary = response.choices[0].message.content
+            logging.info(f"Generated search summary: {summary}")
+            return summary
         except APIError as e:
-            logging.error(f"OpenAI API error during chat completion: {e}")
-            return "I'm sorry, but I encountered an error while trying to generate a response. Please try again later."
+            logging.error(f"Failed to generate search summary: {e}")
+            return "Error: Could not generate a summary of the search results."
+
+    def build_prompt_with_summary(self, user_query: str, summary: str, history: list) -> list:
+        """Builds the final prompt using the pre-generated summary."""
+        system_content = system_content = """You are 'VietBot', a friendly and highly knowledgeable travel assistant for Vietnam. Your primary goal is to provide helpful, fact-based answers to the user's query, relying **strictly** on the provided context summary.
+
+### Your Rules:
+1.  **Grounding is Critical**: Base your entire answer **only** on the information given in the 'CONTEXT SUMMARY'. Do not use any external knowledge or make assumptions.
+2.  **Handle Insufficient Context**: If the context does not contain enough information to answer the user's query, you **must** state that you cannot provide an answer based on the available information. **Do not make up information.**
+3.  **Synthesize, Don't Regurgitate**: Do not just copy-paste from the context. Weave the information together into a helpful, coherent response that directly addresses the user's question.
+4.  **Cite Your Sources**: When you mention a place, attraction, or any entity that has a node ID in the context, you must cite it in parentheses immediately after the name, like `Hanoi (city_hanoi)`.
+5.  **Formatting**: Use Markdown for clear formatting. Use bullet points (`-`) for lists and bold text (`**text**`) for important names or concepts.
+6.  **Tone**: Maintain a helpful, friendly, and encouraging tone throughout the conversation.
+"""
+
+        context_str = f"## CONTEXT SUMMARY\n\n{summary}"
+        user_content = f"{context_str}\n\n## QUERY\n\n{user_query}"
+
+        # Combine system message, conversation history, and the final user query with context
+        full_prompt = [{"role": "system", "content": system_content}]
+        if history:
+            full_prompt.extend(history)
+        full_prompt.append({"role": "user", "content": user_content})
+        
+        return full_prompt
+
+    def get_answer(self, query: str, history: List[Dict[str, str]] = None) -> Generator[str, None, None]:
+        """
+        Main method to get an answer. Now includes a summarization step.
+        """
+        history = history or []
+        
+        # 1. RETRIEVE: Get raw data from Pinecone and Neo4j
+        logging.info("Step 1: Retrieving data from databases...")
+        matches = self.pinecone_query(query, top_k=5)
+        match_ids = [m["id"] for m in matches]
+        graph_facts = self.fetch_graph_context(match_ids)
+        
+        # 2. SUMMARIZE: Create a clean summary of the retrieved data
+        logging.info("Step 2: Summarizing retrieved data...")
+        summary = self._get_search_summary(query, matches, graph_facts)
+        
+        # 3. GENERATE: Build the final prompt using the summary and generate the answer
+        logging.info("Step 3: Generating final answer...")
+        prompt_messages = self.build_prompt_with_summary(query, summary, history)
+        
+        stream = self.openai_client.chat.completions.create(
+            model=self.chat_model,
+            messages=prompt_messages,
+            stream=True
+        )
+        for chunk in stream:
+            content = chunk.choices[0].delta.content or ""
+            yield content
 
     def close(self):
         """Close the Neo4j driver connection."""
@@ -216,10 +247,12 @@ def main():
             if query.lower() in ("exit", "quit"):
                 break
 
-            answer = rag_system.get_answer(query)
+            # --- NEW CODE ---
             print("\n=== Assistant Answer ===\n")
-            print(answer)
-            print("\n========================\n")
+            # Loop through the generator to get the text chunks
+            for chunk in rag_system.get_answer(query):
+                print(chunk, end="", flush=True)
+            print("\n\n========================\n")
 
         rag_system.close()
     except Exception as e:
