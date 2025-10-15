@@ -15,3 +15,7 @@ httpx
 
 # Visualization (Optional)
 pyvis==0.3.1
+
+
+fastapi
+uvicorn[standard]
