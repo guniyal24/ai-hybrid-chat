@@ -7,7 +7,8 @@ from neo4j import GraphDatabase
 from neo4j.exceptions import Neo4jError
 from dotenv import load_dotenv
 import httpx
-
+import redis
+import json
 # --- 1. Basic Setup ---
 load_dotenv()
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -17,14 +18,13 @@ class HybridRAG:
     """A class for a hybrid RAG system using OpenAI, Pinecone, and Neo4j."""
 
     def __init__(self):
-        # --- 2. Securely Initialize Clients ---
         try:
             # OpenAI
             http_client = httpx.Client(trust_env=False)
             self.openai_client = OpenAI(
-                    api_key=os.getenv("OPENAI_API_KEY"),
-                    http_client=http_client)
-            # MODIFIED: Changed to match the screenshot
+                api_key=os.getenv("OPENAI_API_KEY"),
+                http_client=http_client
+            )
             self.embed_model = "text-embedding-3-large"
             self.chat_model = "gpt-4o-mini"
 
@@ -37,11 +37,21 @@ class HybridRAG:
             # Neo4j
             self.neo4j_driver = GraphDatabase.driver(
                 os.getenv("NEO4J_URI"),
-                auth=(os.getenv("NEO4J_USER"), os.getenv("NEO4J_PASSWORD")) , database = os.getenv("NEO4J_DATABASE"))
-
+                auth=(os.getenv("NEO4J_USER"), os.getenv("NEO4J_PASSWORD")),
+                database=os.getenv("NEO4J_DATABASE")
+            )
             self.neo4j_driver.verify_connectivity()
+
+            # ---Connect to Redis ---
+            self.redis_client = redis.Redis(host='localhost', port=6379, db=0)
+            self.redis_client.ping()
+            logging.info("Redis connection successful.")
+
             logging.info("All clients initialized successfully.")
 
+        except redis.exceptions.ConnectionError as e:
+            logging.error(f"Could not connect to Redis: {e}. Caching will be disabled.")
+            self.redis_client = None
         except (APIError, PineconeException, Neo4jError, TypeError) as e:
             logging.error(f"Failed to initialize clients: {e}")
             raise
@@ -60,14 +70,39 @@ class HybridRAG:
             logging.info(f"Index '{self.index_name}' created successfully.")
 
     def embed_text(self, text: str) -> List[float]:
-        """Generate embedding for a text string."""
-        try:
+        """
+        Generate embedding for a text string.
+        First, checks Redis cache. If not found, calls API and stores result in Redis.
+        """
+        # Fallback to no caching if Redis is not available
+        if not self.redis_client:
             resp = self.openai_client.embeddings.create(model=self.embed_model, input=[text])
             return resp.data[0].embedding
+
+        cache_key = f"embedding:{text}"
+        try:
+            # 1. Check the cache first
+            cached_result = self.redis_client.get(cache_key)
+            if cached_result:
+                logging.info("Embedding cache HIT from Redis.")
+                return json.loads(cached_result)
+
+            # 2. If not in cache (a "miss"), call the API
+            logging.info("Embedding cache MISS. Calling OpenAI API.")
+            resp = self.openai_client.embeddings.create(model=self.embed_model, input=[text])
+            embedding = resp.data[0].embedding
+
+            # 3. Store the new result in Redis for next time (expires in 24 hours)
+            self.redis_client.setex(cache_key, 86400, json.dumps(embedding))
+            return embedding
         except APIError as e:
             logging.error(f"OpenAI API error during embedding: {e}")
             return []
-
+        except redis.exceptions.RedisError as e:
+            logging.error(f"Redis error during caching: {e}. Falling back to API call without caching.")
+            resp = self.openai_client.embeddings.create(model=self.embed_model, input=[text])
+            return resp.data[0].embedding
+        
     def pinecone_query(self, query_text: str, top_k: int = 5) -> List[Dict[str, Any]]:
         """Query Pinecone index."""
         try:
