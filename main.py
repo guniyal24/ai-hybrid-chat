@@ -4,8 +4,6 @@ from fastapi import FastAPI
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-
-# Make sure your HybridRAG class is in a file named hybrid_chat.py
 from hybrid_chat import HybridRAG
 
 # --- App Initialization ---
@@ -17,7 +15,6 @@ app = FastAPI(
 rag_system = HybridRAG()
 
 # --- CORS Middleware ---
-# This allows the JavaScript frontend (running on a different port) to call this API
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],  # Allows all origins
@@ -29,7 +26,7 @@ app.add_middleware(
 # --- Pydantic Models ---
 class ChatRequest(BaseModel):
     query: str
-    # In the future, you could add: conversation_id: str, history: list
+    
 
 # --- API Endpoints ---
 @app.post("/api/chat")
