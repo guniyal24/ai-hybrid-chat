@@ -1,7 +1,17 @@
+# requirements.txt
+
+# Graph Database
 neo4j==5.9.0
-openai==1.0.0
-pinecone-client==2.2.0
-pyvis==0.3.1
 networkx==3.1
-tqdm
+
+# AI & Vector DB
+openai>=1.0.0
+pinecone>=3.0.0
+
+# Utilities
 python-dotenv
+tqdm
+httpx
+
+# Visualization (Optional)
+pyvis==0.3.1
