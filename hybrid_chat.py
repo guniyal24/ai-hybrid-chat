@@ -215,27 +215,44 @@ After your thought process, provide the final answer to the user inside `<answer
         full_prompt.append({"role": "user", "content": user_content})
         
         return full_prompt
-
+    
     def get_answer(self, query: str, history: List[Dict[str, str]] = None) -> Generator[str, None, None]:
         """
-        Main method to get an answer. Now includes a summarization step.
+        Main method to get an answer, with print statements for debugging each step.
         """
         history = history or []
         
-        # 1. RETRIEVE: Get raw data from Pinecone and Neo4j
-        logging.info("Step 1: Retrieving data from databases...")
+        # --- STEP 1: RETRIEVE from Pinecone ---
         matches = self.pinecone_query(query, top_k=5)
         match_ids = [m["id"] for m in matches]
+        
+        print("\n\n--- [STEP 1] IDs from Pinecone ---")
+        print(match_ids)
+        print("----------------------------------\n")
+
+        # --- STEP 2: RETRIEVE from Neo4j ---
         graph_facts = self.fetch_graph_context(match_ids)
         
-        # 2. SUMMARIZE: Create a clean summary of the retrieved data
-        logging.info("Step 2: Summarizing retrieved data...")
+        print("\n--- [STEP 2] Context from Neo4j Graph ---")
+        print(json.dumps(graph_facts, indent=2))
+        print("-----------------------------------------\n")
+
+        # --- STEP 3: SUMMARIZE the context ---
         summary = self._get_search_summary(query, matches, graph_facts)
         
-        # 3. GENERATE: Build the final prompt using the summary and generate the answer
-        logging.info("Step 3: Generating final answer...")
+        print("\n--- [STEP 3] Generated Search Summary ---")
+        print(summary)
+        print("-----------------------------------------\n")
+
+        # --- STEP 4: BUILD the final prompt ---
         prompt_messages = self.build_prompt_with_summary(query, summary, history)
         
+        print("\n--- [STEP 4] Final Prompt to LLM ---")
+        print(json.dumps(prompt_messages, indent=2))
+        print("------------------------------------\n")
+
+        # --- STEP 5: GENERATE the final answer ---
+        print("\n--- [STEP 5] Streaming Assistant Answer ---\n")
         stream = self.openai_client.chat.completions.create(
             model=self.chat_model,
             messages=prompt_messages,
@@ -244,11 +261,6 @@ After your thought process, provide the final answer to the user inside `<answer
         for chunk in stream:
             content = chunk.choices[0].delta.content or ""
             yield content
-
-    def close(self):
-        """Close the Neo4j driver connection."""
-        self.neo4j_driver.close()
-        logging.info("Neo4j driver closed.")
 
 
 def main():
@@ -262,10 +274,7 @@ def main():
                 continue
             if query.lower() in ("exit", "quit"):
                 break
-
-            # --- NEW CODE ---
             print("\n=== Assistant Answer ===\n")
-            # Loop through the generator to get the text chunks
             for chunk in rag_system.get_answer(query):
                 print(chunk, end="", flush=True)
             print("\n\n========================\n")

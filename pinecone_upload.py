@@ -7,7 +7,7 @@ from openai import OpenAI, APIError
 from pinecone import Pinecone, ServerlessSpec, PineconeException
 from dotenv import load_dotenv
 import httpx
-# --- Basic Setup ---
+
 load_dotenv()
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
