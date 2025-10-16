@@ -1,167 +1,228 @@
-AI Hybrid Travel Chatbot 🚀
-This repository contains the code for a full-stack, AI-powered travel assistant for Vietnam. It leverages a sophisticated Retrieval-Augmented Generation (RAG) architecture with a hybrid data backend, combining the strengths of semantic search and graph databases to provide intelligent, fact-based answers. The application features a real-time, interactive web interface.
+# 🌏 AI Hybrid Travel Chatbot for Vietnam
 
-## Features
-Hybrid RAG Architecture: Combines Pinecone for fast semantic search (understanding the what) with Neo4j for structured graph traversal (understanding the how).
+An intelligent, full-stack travel assistant powered by advanced AI and a hybrid RAG (Retrieval-Augmented Generation) architecture. This chatbot combines semantic search with graph database traversal to deliver accurate, context-aware travel recommendations for Vietnam in real-time.
 
-Real-Time Streaming: AI responses are streamed token-by-token to the user, providing an interactive, real-time experience.
+![Python](https://img.shields.io/badge/Python-3.11-blue)
+![FastAPI](https://img.shields.io/badge/FastAPI-0.100+-green)
+![React](https://img.shields.io/badge/React-18+-61DAFB)
+![License](https://img.shields.io/badge/License-MIT-yellow)
 
-Persistent Caching: Uses Redis to cache expensive OpenAI embedding calls, significantly improving speed and reducing API costs on repeated queries.
+## ✨ Features
 
-Interactive Web UI: A clean, modern chat interface built with React that includes conversation history.
+- **🔍 Hybrid RAG Architecture**: Combines Pinecone's semantic search (understanding *what* users ask) with Neo4j's graph traversal (understanding *how* information connects) for superior context retrieval
+- **⚡ Real-Time Streaming**: AI responses stream token-by-token for an interactive, conversational experience
+- **💾 Smart Caching**: Redis-powered persistent caching drastically reduces API costs and improves response times for repeated queries
+- **🎨 Modern Web Interface**: Clean, responsive React UI with full conversation history
+- **🏗️ Production-Ready Backend**: Async FastAPI server with structured logging, comprehensive error handling, and environment-based configuration
+- **🔄 Decoupled Architecture**: Independent frontend and backend services for maximum flexibility and scalability
 
-Decoupled Full-Stack Design: A robust Python backend API built with FastAPI serves the AI logic, while a standalone JavaScript (React) frontend handles the user experience.
+## 🏛️ Architecture
 
-Production-Ready Backend: The backend is built with asynchronous capabilities, loads all secrets from a .env file, and includes structured logging and error handling.
+```
+┌─────────────────┐
+│   React UI      │  ← User Interface
+│  (Port 5173)    │
+└────────┬────────┘
+         │ HTTP
+         ▼
+┌─────────────────┐
+│  FastAPI Server │  ← Backend API
+│  (Port 8000)    │
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────────────────┐
+│      RAG Pipeline           │
+│  ┌──────────────────────┐   │
+│  │  Pinecone (Vectors)  │   │  ← Semantic Search
+│  └──────────────────────┘   │
+│  ┌──────────────────────┐   │
+│  │   Neo4j (Graph DB)   │   │  ← Structured Context
+│  └──────────────────────┘   │
+│  ┌──────────────────────┐   │
+│  │   Redis (Cache)      │   │  ← Embedding Cache
+│  └──────────────────────┘   │
+└─────────────────────────────┘
+         │
+         ▼
+┌─────────────────┐
+│   OpenAI API    │  ← LLM & Embeddings
+└─────────────────┘
+```
 
-## Architecture
-The application is built on a decoupled, client-server architecture.
+**Query Flow:**
+1. User sends message from React UI
+2. FastAPI backend receives request
+3. RAG pipeline retrieves context from Pinecone (semantic) and Neo4j (structured)
+4. OpenAI generates streaming response with enriched context
+5. Response streams back to user in real-time
 
-Frontend (React): A standalone web application that runs in the user's browser. It captures user input and communicates with the backend via HTTP requests.
-
-Backend (FastAPI): A Python API server that orchestrates the entire RAG pipeline. It has no user interface and only exposes data endpoints.
-
-Query Flow:
-
-[User @ React UI] -> [HTTP Request] -> [FastAPI Backend]
-                                             |
-                                             V
-                                     [RAG Pipeline]
-                                     /            \
-                       [Pinecone: Semantic Search]  [Neo4j: Graph Context]
-                                     \            /
-                                             |
-                                             V
-                                      [OpenAI LLM] -> [Streaming Response] -> [User @ React UI]
-## Getting Started
-Follow these steps to set up and run the project locally.
+## 🚀 Getting Started
 
 ### Prerequisites
-Python 3.11
 
-Node.js and npm
+Ensure you have the following installed:
 
-Docker (for Redis databases)
+- **Python 3.11+**
+- **Node.js 16+** and npm
+- **Docker** and Docker Compose
+- **API Keys:**
+  - [OpenAI API Key](https://platform.openai.com/)
+  - [Pinecone API Key](https://www.pinecone.io/)
 
-Accounts:
+### 1️⃣ Backend Setup
 
-OpenAI API Key
+#### Clone and Navigate
+```bash
+git clone <your-repository-url>
+cd Ai-Hybrid-Chat
+```
 
-Pinecone API Key
+#### Create Virtual Environment
+```bash
+# macOS/Linux
+python3.11 -m venv venv
+source venv/bin/activate
 
-### 1. Backend Setup 🐍
-Clone the Repository and navigate to the project's root directory.
+# Windows
+py -3.11 -m venv venv
+venv\Scripts\activate
+```
 
-Create a Virtual Environment:
+#### Configure Environment Variables
+Create a `.env` file in the root directory:
 
-macOS/Linux: python3.11 -m venv venv
+```ini
+# OpenAI Configuration
+OPENAI_API_KEY=sk-your-openai-key-here
 
-Windows: py -3.11 -m venv venv
-
-Activate the Virtual Environment:
-
-macOS/Linux: source venv/bin/activate
-
-Windows: venv\Scripts\activate
-
-Create Your .env File: Create a file named .env in the root directory. Copy the content from .env.example (if provided) or use the template below and fill in your credentials.
-
-Ini, TOML
-
-# .env file
-OPENAI_API_KEY="sk-..."
-PINECONE_API_KEY="..."
-PINECONE_INDEX_NAME="vietnam-travel"
+# Pinecone Configuration
+PINECONE_API_KEY=your-pinecone-api-key
+PINECONE_INDEX_NAME=vietnam-travel
 PINECONE_VECTOR_DIM=3072
-NEO4J_URI="neo4j://localhost:7687"
-NEO4J_USER="neo4j"
-NEO4J_PASSWORD="your-neo4j-password"
-NEO4J_DATABASE="ai-chat-db"
-Install Python Dependencies:
 
-Bash
+# Neo4j Configuration
+NEO4J_URI=neo4j://localhost:7687
+NEO4J_USER=neo4j
+NEO4J_PASSWORD=your-secure-password
+NEO4J_DATABASE=ai-chat-db
 
+# Redis Configuration (optional - uses defaults)
+REDIS_HOST=localhost
+REDIS_PORT=6379
+```
+
+#### Install Dependencies
+```bash
 pip install -r requirements.txt
-Start Databases with Docker: Run these commands in your terminal to start Neo4j (with the APOC plugin) and Redis containers.
+```
 
-Bash
+#### Start Database Services
+```bash
+# Start Neo4j with APOC plugin
+docker run -d \
+  --name my-neo4j-db \
+  -p 7474:7474 \
+  -p 7687:7687 \
+  -e NEO4J_AUTH=neo4j/your-secure-password \
+  -e NEO4J_PLUGINS='["apoc"]' \
+  neo4j:latest
 
-# Start Neo4j with APOC
-docker run -d --name my-neo4j-db -p 7474:7474 -p 7687:7687 -e NEO4J_AUTH=neo4j/your-neo4j-password -e NEO4J_PLUGINS='["apoc"]' neo4j:latest
+# Start Redis cache
+docker run -d \
+  --name my-redis-cache \
+  -p 6379:6379 \
+  redis:latest
+```
 
-# Start Redis
-docker run -d --name my-redis-cache -p 6379:6379 redis
-Note: Make sure the NEO4J_PASSWORD in your .env file matches the one you set in the docker command.
+**Note:** Ensure the `NEO4J_PASSWORD` in your `.env` matches the Docker command.
 
-Load the Data: Run the two loading scripts one after the other.
-
-Bash
-
-# 1. Load data into Neo4j
+#### Load Data into Databases
+```bash
+# 1. Populate Neo4j graph database
 python3.11 load_to_neo4j.py
 
-# 2. Load data into Pinecone
+# 2. Upload embeddings to Pinecone
 python3.11 pinecone_upload.py
-Start the Backend Server:
+```
 
-Bash
-
+#### Start Backend Server
+```bash
 uvicorn main:app --reload
-Your backend is now running at http://127.0.0.1:8000.
+```
 
-### 2. Frontend Setup ⚛️
-Open a NEW Terminal Window.
+Backend now running at **http://127.0.0.1:8000** 🎉
 
-Navigate to the Frontend Directory:
+API documentation available at **http://127.0.0.1:8000/docs**
 
-Bash
+### 2️⃣ Frontend Setup
 
+#### Navigate to Frontend Directory
+Open a **new terminal** and run:
+
+```bash
 cd chat-frontend
-Install JavaScript Dependencies:
+```
 
-Bash
-
+#### Install Dependencies
+```bash
 npm install
-Start the Frontend Server:
+```
 
-Bash
-
+#### Start Development Server
+```bash
 npm run dev
-Your browser will automatically open to the chat application, typically at http://localhost:5173.
+```
 
-## Project Structure
-.
-├── Ai-Hybrid-Chat/
-│   ├── chat-frontend/         # React Frontend Application
-│   │   ├── src/
-│   │   │   ├── App.jsx        # Main chat component
-│   │   │   └── App.css        # Styling
-│   │   └── package.json
-│   │
-│   ├── .env                   # All secrets and configuration
-│   ├── .gitignore
-│   ├── requirements.txt       # Python dependencies
-│   ├── vietnam_travel_dataset.json # Source data
-│   │
-│   ├── load_to_neo4j.py       # Script to load data into Neo4j
-│   ├── pinecone_upload.py     # Script to load data into Pinecone
-│   ├── hybrid_chat.py         # Core RAG logic class
-│   └── main.py                # FastAPI backend server
+Frontend now running at **http://localhost:5173** 🎉
+
+Your browser should automatically open the chat interface!
+
+## 📁 Project Structure
+
+```
+Ai-Hybrid-Chat/
+├── chat-frontend/              # React frontend application
+│   ├── src/
+│   │   ├── App.jsx            # Main chat component
+│   │   ├── App.css            # UI styling
+│   │   └── main.jsx           # React entry point
+│   ├── package.json
+│   └── vite.config.js
 │
-└── README.md
-## Key Technologies Used
-Backend: Python, FastAPI, Uvicorn
+├── .env                        # Environment variables (DO NOT COMMIT)
+├── .env.example               # Template for environment variables
+├── .gitignore
+├── requirements.txt           # Python dependencies
+│
+├── vietnam_travel_dataset.json # Source travel data
+│
+├── load_to_neo4j.py           # Neo4j data loader script
+├── pinecone_upload.py         # Pinecone embedding uploader
+├── hybrid_chat.py             # Core RAG pipeline logic
+├── main.py                    # FastAPI backend server
+│
+└── README.md                  # You are here!
+```
 
-Frontend: JavaScript, React, Vite
+## 🛠️ Tech Stack
 
-Databases:
+### Backend
+- **Python 3.11** - Core language
+- **FastAPI** - Modern async web framework
+- **Uvicorn** - Lightning-fast ASGI server
+- **Pydantic** - Data validation and settings management
 
-Neo4j: Graph database for storing structured, relational data.
+### Frontend
+- **React 18** - UI library
+- **Vite** - Next-generation build tool
+- **JavaScript (ES6+)** - Modern web development
 
-Pinecone: Vector database for high-speed semantic search.
+### Databases
+- **Neo4j** - Graph database for relational travel data
+- **Pinecone** - Vector database for semantic similarity search
+- **Redis** - In-memory cache for embeddings
 
-Redis: In-memory database for persistent caching.
-
-AI Services:
-
-OpenAI: For language models (gpt-4o-mini) and text embeddings (text-embedding-3-large).
+### AI Services
+- **OpenAI GPT-4o-mini** - Language model for response generation
+- **OpenAI text-embedding-3-large** - High-quality text embedding
