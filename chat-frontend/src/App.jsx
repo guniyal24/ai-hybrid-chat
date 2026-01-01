@@ -1,92 +1,168 @@
-// src/App.jsx
-import React, { useState, useEffect, useRef } from 'react';
-import ReactMarkdown from 'react-markdown'; // <-- Import the markdown component
+import { useState, useRef, useEffect } from 'react';
+import ReactMarkdown from 'react-markdown';
 import './App.css';
 
+const API_URL = "http://127.0.0.1:8000/api";
+
 function App() {
-  const [messages, setMessages] = useState([
-    { role: 'assistant', content: 'Hi! How can I help you plan your trip to Vietnam?' }
-  ]);
+  const [token, setToken] = useState(localStorage.getItem('token') || null);
+  const [isLoginView, setIsLoginView] = useState(true);
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [messages, setMessages] = useState([]);
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
-  const messagesEndRef = useRef(null);
+  const [sessionId, setSessionId] = useState(null);
+  const chatEndRef = useRef(null);
 
-  const scrollToBottom = () => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  useEffect(() => {
+    chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [messages]);
+
+  // --- HELPER: Remove <thinking> tags ---
+  const cleanResponse = (text) => {
+    // Replaces everything between <thinking> and </thinking> with an empty string
+    return text.replace(/<thinking>[\s\S]*?<\/thinking>/g, '').trim();
   };
 
-  useEffect(scrollToBottom, [messages]);
+  const handleAuth = async (e) => {
+    e.preventDefault();
+    const endpoint = isLoginView ? '/token' : '/register';
+    const payload = isLoginView 
+      ? new URLSearchParams({ username: email, password: password }) 
+      : JSON.stringify({ email, password });
 
-  const handleSubmit = async (e) => {
+    const headers = isLoginView 
+      ? { 'Content-Type': 'application/x-www-form-urlencoded' }
+      : { 'Content-Type': 'application/json' };
+
+    try {
+      const res = await fetch(`${API_URL}${endpoint}`, { method: 'POST', headers, body: payload });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || 'Auth failed');
+
+      if (isLoginView) {
+        setToken(data.access_token);
+        localStorage.setItem('token', data.access_token);
+      } else {
+        alert("Registered! Please log in.");
+        setIsLoginView(true);
+      }
+    } catch (err) {
+      alert(err.message);
+    }
+  };
+
+  const logout = () => {
+    setToken(null);
+    localStorage.removeItem('token');
+    setMessages([]);
+    setSessionId(null);
+  };
+
+  const sendMessage = async (e) => {
     e.preventDefault();
     if (!input.trim() || isLoading) return;
 
-    const userMessage = { role: 'user', content: input };
-    setMessages(prev => [...prev, userMessage]);
+    const userMsg = { role: 'user', content: input };
+    setMessages(prev => [...prev, userMsg]);
     setInput('');
     setIsLoading(true);
 
-    setMessages(prev => [...prev, { role: 'assistant', content: '' }]);
-
     try {
-      const response = await fetch('http://127.0.0.1:8000/api/chat', {
+      const res = await fetch(`${API_URL}/chat`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ query: input }),
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`,
+          ...(sessionId && { 'X-Session-ID': sessionId })
+        },
+        body: JSON.stringify({ query: userMsg.content, history: messages })
       });
 
-      if (!response.body) return;
-      
-      const reader = response.body.getReader();
+      if (res.status === 401) {
+        logout();
+        return;
+      }
+
+      const newSessionId = res.headers.get('X-Session-ID');
+      if (newSessionId) setSessionId(newSessionId);
+
+      const reader = res.body.getReader();
       const decoder = new TextDecoder();
+      let botMsg = { role: 'bot', content: '' };
       
+      setMessages(prev => [...prev, botMsg]); 
+
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
-        const chunk = decoder.decode(value);
+        const chunk = decoder.decode(value, { stream: true });
+        botMsg.content += chunk;
+        
         setMessages(prev => {
-          const lastMessage = prev[prev.length - 1];
-          const updatedLastMessage = { ...lastMessage, content: lastMessage.content + chunk };
-          return [...prev.slice(0, -1), updatedLastMessage];
+          const newMsgs = [...prev];
+          newMsgs[newMsgs.length - 1] = { ...botMsg };
+          return newMsgs;
         });
       }
-    } catch (error) {
-      console.error('Failed to fetch:', error);
-      setMessages(prev => {
-        const lastMessage = prev[prev.length - 1];
-        const updatedLastMessage = { ...lastMessage, content: 'Sorry, I ran into an error. Please try again.' };
-        return [...prev.slice(0, -1), updatedLastMessage];
-      });
+
+    } catch (err) {
+      console.error(err);
+      setMessages(prev => [...prev, { role: 'bot', content: "Error connecting to server." }]);
     } finally {
       setIsLoading(false);
     }
   };
 
+  if (!token) {
+    return (
+      <div className="auth-container">
+        <div className="glass-card auth-box">
+          <h2>{isLoginView ? "Welcome Back" : "Create Account"}</h2>
+          <form onSubmit={handleAuth}>
+            <input type="email" placeholder="Email" value={email} onChange={e => setEmail(e.target.value)} required />
+            <input type="password" placeholder="Password" value={password} onChange={e => setPassword(e.target.value)} required />
+            <button type="submit">{isLoginView ? "Login" : "Register"}</button>
+          </form>
+          <p onClick={() => setIsLoginView(!isLoginView)}>
+            {isLoginView ? "Need an account? Register" : "Have an account? Login"}
+          </p>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="chat-container">
-      <div className="chat-header">
-        <h1>✈️ Vietnam AI Travel Assistant</h1>
-      </div>
-      <div className="chat-messages">
-        {messages.map((msg, index) => (
-          <div key={index} className={`message ${msg.role}`}>
-            {/* --- THIS IS THE FIX --- */}
-            <ReactMarkdown>{msg.content}</ReactMarkdown>
-            {/* -------------------- */}
+      <header className="glass-header">
+        <h1>🇻🇳 VietBot AI</h1>
+        <button onClick={logout} className="logout-btn">Logout</button>
+      </header>
+
+      <div className="messages-area">
+        {messages.map((msg, idx) => (
+          <div key={idx} className={`message ${msg.role} fade-in`}>
+            <div className="bubble">
+              {/* Use ReactMarkdown to render bold, lists, etc. */}
+              <ReactMarkdown>
+                {msg.role === 'bot' ? cleanResponse(msg.content) : msg.content}
+              </ReactMarkdown>
+            </div>
           </div>
         ))}
-        <div ref={messagesEndRef} />
+        {isLoading && <div className="message bot"><div className="bubble loading">typing...</div></div>}
+        <div ref={chatEndRef} />
       </div>
-      <form onSubmit={handleSubmit} className="chat-input-form">
-        <input
-          type="text"
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          placeholder="Ask a question about travel in Vietnam..."
-          disabled={isLoading}
+
+      <form onSubmit={sendMessage} className="input-area glass-input">
+        <input 
+          value={input} 
+          onChange={e => setInput(e.target.value)} 
+          placeholder="Ask about travel in Vietnam..." 
         />
         <button type="submit" disabled={isLoading}>
-          {isLoading ? 'Thinking...' : 'Send'}
+          <svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"></path></svg>
         </button>
       </form>
     </div>

@@ -1,288 +1,227 @@
 import os
 import logging
-from typing import List, Dict, Any , Generator
-from openai import OpenAI, APIError
-from pinecone import Pinecone, PineconeException
+import json
+from typing import List, Dict, Any, Generator
+from openai import OpenAI
+from pinecone import Pinecone
 from neo4j import GraphDatabase
-from neo4j.exceptions import Neo4jError
 from dotenv import load_dotenv
 import httpx
 import redis
-import json
+from flashrank import Ranker, RerankRequest 
 
-# --- 1. Basic Setup ---
 load_dotenv()
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-
 class HybridRAG:
-    """A class for a hybrid RAG system using OpenAI, Pinecone, and Neo4j."""
-
     def __init__(self):
         try:
-            # OpenAI
             http_client = httpx.Client(trust_env=False)
             self.openai_client = OpenAI(
                 api_key=os.getenv("OPENAI_API_KEY"),
                 http_client=http_client
             )
             self.embed_model = "text-embedding-3-large"
+            self.router_model = "gpt-4o-mini"
             self.chat_model = "gpt-4o-mini"
+            self.reasoning_model = "gpt-4o"
 
-            # Pinecone
+            self.ranker = Ranker(model_name="ms-marco-TinyBERT-L-2-v2", cache_dir="./opt")
+            logging.info("FlashRank Re-ranker initialized.")
+
+            # --- Pinecone ---
             self.pinecone_client = Pinecone(api_key=os.getenv("PINECONE_API_KEY"))
             self.index_name = os.getenv("PINECONE_INDEX_NAME")
             self._ensure_pinecone_index()
             self.pinecone_index = self.pinecone_client.Index(self.index_name)
 
-            # Neo4j
+            # --- Neo4j ---
             self.neo4j_driver = GraphDatabase.driver(
                 os.getenv("NEO4J_URI"),
                 auth=(os.getenv("NEO4J_USER"), os.getenv("NEO4J_PASSWORD")),
-                database=os.getenv("NEO4J_DATABASE")
+                database=os.getenv("NEO4J_DATABASE", "neo4j") 
             )
             self.neo4j_driver.verify_connectivity()
 
-            # ---Connect to Redis ---
-            self.redis_client = redis.Redis(host='localhost', port=6379, db=0)
-            self.redis_client.ping()
-            logging.info("Redis connection successful.")
+            # --- Redis (Optional / Fail-Safe) ---
+            try:
+                self.redis_client = redis.Redis(host='localhost', port=6379, db=0, socket_connect_timeout=1)
+                self.redis_client.ping()
+                logging.info("Redis connection successful.")
+            except (redis.ConnectionError, redis.TimeoutError):
+                logging.warning("Redis down. Caching DISABLED.")
+                self.redis_client = None
 
-            logging.info("All clients initialized successfully.")
-
-        except redis.exceptions.ConnectionError as e:
-            logging.error(f"Could not connect to Redis: {e}. Caching will be disabled.")
-            self.redis_client = None
-        except (APIError, PineconeException, Neo4jError, TypeError) as e:
-            logging.error(f"Failed to initialize clients: {e}")
+        except Exception as e:
+            logging.critical(f"Init failed: {e}")
             raise
 
+    def close(self):
+        if self.neo4j_driver: self.neo4j_driver.close()
+
     def _ensure_pinecone_index(self):
-        """Checks if the Pinecone index exists and creates it if not."""
         if self.index_name not in self.pinecone_client.list_indexes().names():
-            logging.warning(f"Index '{self.index_name}' not found. Creating a new one.")
             self.pinecone_client.create_index(
                 name=self.index_name,
-                # MODIFIED: Default value updated to match the large model
                 dimension=int(os.getenv("PINECONE_VECTOR_DIM", 3072)),
                 metric="cosine",
                 spec={"serverless": {"cloud": "aws", "region": "us-east-1"}}
             )
-            logging.info(f"Index '{self.index_name}' created successfully.")
 
-    def embed_text(self, text: str) -> List[float]:
-        """
-        Generate embedding for a text string.
-        First, checks Redis cache. If not found, calls API and stores result in Redis.
-        """
-        # Fallback to no caching if Redis is not available
-        if not self.redis_client:
-            resp = self.openai_client.embeddings.create(model=self.embed_model, input=[text])
-            return resp.data[0].embedding
-
-        cache_key = f"embedding:{text}"
-        try:
-            # 1. Check the cache first
-            cached_result = self.redis_client.get(cache_key)
-            if cached_result:
-                logging.info("Embedding cache HIT from Redis.")
-                return json.loads(cached_result)
-
-            # 2. If not in cache (a "miss"), call the API
-            logging.info("Embedding cache MISS. Calling OpenAI API.")
-            resp = self.openai_client.embeddings.create(model=self.embed_model, input=[text])
-            embedding = resp.data[0].embedding
-
-            # 3. Store the new result in Redis for next time (expires in 24 hours)
-            self.redis_client.setex(cache_key, 86400, json.dumps(embedding))
-            return embedding
-        except APIError as e:
-            logging.error(f"OpenAI API error during embedding: {e}")
-            return []
-        except redis.exceptions.RedisError as e:
-            logging.error(f"Redis error during caching: {e}. Falling back to API call without caching.")
-            resp = self.openai_client.embeddings.create(model=self.embed_model, input=[text])
-            return resp.data[0].embedding
-        
-    def pinecone_query(self, query_text: str, top_k: int = 5) -> List[Dict[str, Any]]:
-        """Query Pinecone index."""
-        try:
-            vec = self.embed_text(query_text)
-            if not vec:
-                return []
-            res = self.pinecone_index.query(
-                vector=vec, top_k=top_k, include_metadata=True
-            )
-            logging.info(f"Pinecone found {len(res['matches'])} matches.")
-            return res["matches"]
-        except PineconeException as e:
-            logging.error(f"Pinecone query failed: {e}")
-            return []
-
-    def fetch_graph_context(self, node_ids: List[str]) -> List[Dict[str, Any]]:
-        """Fetch neighboring nodes from Neo4j in a single efficient query."""
-        if not node_ids:
-            return []
-        cypher_query = """
-        UNWIND $node_ids AS nid
-        MATCH (n:Entity {id: nid})-[r]-(m:Entity)
-        RETURN
-          nid AS source_id,
-          type(r) AS relation,
-          m.id AS target_id,
-          m.name AS target_name,
-          COALESCE(left(m.description, 300), "No description available.") AS target_desc,
-          labels(m) AS target_labels
-        LIMIT 20
+    def create_user(self, email: str, password_hash: str):
+        """Creates a new User node in Neo4j."""
+        cypher = """
+        MERGE (u:User {email: $email})
+        ON CREATE SET u.password_hash = $ph, u.created_at = datetime()
+        RETURN u
         """
         try:
             with self.neo4j_driver.session() as session:
-                result = session.run(cypher_query, node_ids=node_ids)
-                facts = [record.data() for record in result]
-                logging.info(f"Neo4j found {len(facts)} graph facts.")
-                return facts
-        except Neo4jError as e:
-            logging.error(f"Neo4j query failed: {e}")
-            return []
+                session.run(cypher, email=email, ph=password_hash)
+            logging.info(f"User created: {email}")
+        except Exception as e:
+            logging.error(f"Failed to create user: {e}")
+            raise
 
-    def _get_search_summary(self, query: str, pinecone_matches: list, graph_facts: list) -> str:
-        """Summarizes retrieved context using an LLM call."""
-        if not pinecone_matches and not graph_facts:
-            return "No relevant information was found in the knowledge base."
+    def get_user(self, email: str) -> Dict[str, Any]:
+        """Fetches a user and their password hash."""
+        cypher = "MATCH (u:User {email: $email}) RETURN u.email as email, u.password_hash as password_hash"
+        with self.neo4j_driver.session() as session:
+            result = session.run(cypher, email=email).single()
+            return result.data() if result else None
 
-        # Combine the retrieved info into a single text block
-        summary_context = "### Pinecone Semantic Search Results:\n"
-        for match in pinecone_matches:
-            meta = match.get('metadata', {})
-            summary_context += f"- ID: {meta.get('id', 'N/A')}, Name: {meta.get('name', 'N/A')}, Type: {meta.get('type', 'N/A')}\n"
+    def embed_text(self, text: str) -> List[float]:
+        if not self.redis_client:
+            return self.openai_client.embeddings.create(model=self.embed_model, input=[text]).data[0].embedding
         
-        summary_context += "\n### Neo4j Graph Facts:\n"
-        for fact in graph_facts:
-            summary_context += f"- The entity `{fact['source_id']}` has a `{fact['relation']}` relation with `{fact['target_name']}` (`{fact['target_id']}`).\n"
+        cache_key = f"embedding:{text}"
+        if self.redis_client.get(cache_key):
+            return json.loads(self.redis_client.get(cache_key))
         
+        resp = self.openai_client.embeddings.create(model=self.embed_model, input=[text])
+        emb = resp.data[0].embedding
+        self.redis_client.setex(cache_key, 86400, json.dumps(emb))
+        return emb
+
+    def _classify_intent(self, query: str) -> str:
         try:
-            response = self.openai_client.chat.completions.create(
-                model="gpt-4o-mini",
+            resp = self.openai_client.chat.completions.create(
+                model=self.router_model,
                 messages=[
-                    {"role": "system", "content": "You are a highly skilled summarization assistant. Your task is to synthesize the provided search results into a concise, single paragraph. Focus only on the information that is most relevant to answering the user's query."},
-                    {"role": "user", "content": f"Please summarize the following information in the context of this user query: '{query}'\n\n### Search Results:\n{summary_context}"}
-                ],
-                temperature=0.0
+                    {"role": "system", "content": "Classify: 'general_chat' or 'travel_search'. Output label only."},
+                    {"role": "user", "content": query}
+                ], temperature=0.0, max_tokens=10
             )
-            summary = response.choices[0].message.content
-            logging.info(f"Generated search summary: {summary}")
-            return summary
-        except APIError as e:
-            logging.error(f"Failed to generate search summary: {e}")
-            return "Error: Could not generate a summary of the search results."
+            return resp.choices[0].message.content.strip().lower()
+        except: return "travel_search"
 
-    def build_prompt_with_summary(self, user_query: str, summary: str, history: list) -> list:
-        """Builds the final prompt using the pre-generated summary."""
-        system_content = system_content = system_content = """You are 'VietBot', a meticulous and expert AI travel planner for Vietnam. Your task is to follow a strict reasoning process to provide the most accurate and helpful answer possible, based **exclusively** on the provided context.
 
-### Step 1: Internal Thought Process
-
-First, you must reason through the user's request by completing the following steps inside `<thinking>` tags. This is your private workspace.
-
-<thinking>
-**1. User's Goal:** [Identify the user's primary intent in one clear sentence.]
-**2. Key Information & Constraints:** [Extract all key entities, locations, durations, preferences (e.g., 'romantic'), or other constraints from the user's query.]
-**3. Context Analysis:** [Analyze the provided 'CONTEXT SUMMARY'. List the specific pieces of information that directly address the user's goal and constraints.]
-**4. Sufficiency Check:** [Based on the analysis, explicitly state whether the context is sufficient to fully answer the query. If not, identify exactly what information is missing.]
-**5. Plan:** [Based on the available information, outline a clear, step-by-step plan for constructing the final answer.]
-</thinking>
-
-### Step 2: Final Answer to the User
-
-After your thought process, provide the final answer to the user inside `<answer>` tags.
-
-### Rules for the Final Answer:
--   The answer must be based **only** on your 'Plan' from the `<thinking>` block.
--   If the context was insufficient, state clearly what you can answer and what information you couldn't find. **Do not make up information.**
--   Do not mention your thought process or the context summary in the final answer. Speak directly to the user.
--   Format the answer for clarity using Markdown (lists, bold text).
--   Cite sources by including the node ID in parentheses, like `Hoi An (town_hoi_an)`.
--   Maintain a friendly, expert tone.
-"""
-
-        context_str = f"## CONTEXT SUMMARY\n\n{summary}"
-        user_content = f"{context_str}\n\n## QUERY\n\n{user_query}"
-
-        # Combine system message, conversation history, and the final user query with context
-        full_prompt = [{"role": "system", "content": system_content}]
-        if history:
-            full_prompt.extend(history)
-        full_prompt.append({"role": "user", "content": user_content})
-        
-        return full_prompt
-    
-    def get_answer(self, query: str, history: List[Dict[str, str]] = None) -> Generator[str, None, None]:
+    def log_interaction(self, session_id: str, query: str, response: str, retrieved_ids: List[str]):
+        cypher = """
+        MERGE (s:Session {id: $session_id})
+        CREATE (l:Log {id: randomUUID(), query: $query, response: $response, timestamp: datetime()})
+        CREATE (s)-[:HAS_LOG]->(l)
+        WITH l UNWIND $node_ids AS nid
+        MATCH (e:Entity {id: nid}) MERGE (l)-[:USED_CONTEXT]->(e)
         """
-        Main method to get an answer, with print statements for debugging each step.
+        try:
+            with self.neo4j_driver.session() as session:
+                session.run(cypher, session_id=session_id, query=query, response=response, node_ids=retrieved_ids)
+        except Exception as e: logging.error(f"Log failed: {e}")
+
+    def pinecone_query(self, query_text: str, top_k: int = 5) -> List[Dict[str, Any]]:
+        vec = self.embed_text(query_text)
+        if not vec: return []
+        try:
+            return self.pinecone_index.query(vector=vec, top_k=top_k, include_metadata=True)["matches"]
+        except: return []
+
+    def fetch_graph_context(self, node_ids: List[str]) -> List[Dict[str, Any]]:
+        if not node_ids: return []
+        cypher = """
+        UNWIND $node_ids AS nid MATCH (n:Entity {id: nid})-[r]-(m:Entity)
+        RETURN nid AS source_id, type(r) AS rel, m.id AS target_id, m.name AS name, 
+               COALESCE(left(m.description, 200), "") AS desc LIMIT 25
         """
-        history = history or []
-        
-        # --- STEP 1: RETRIEVE from Pinecone ---
-        matches = self.pinecone_query(query, top_k=5)
-        match_ids = [m["id"] for m in matches]
-        
-        print("\n\n--- [STEP 1] IDs from Pinecone ---")
-        print(match_ids)
-        print("----------------------------------\n")
+        with self.neo4j_driver.session() as session:
+            return [record.data() for record in session.run(cypher, node_ids=node_ids)]
 
-        # --- STEP 2: RETRIEVE from Neo4j ---
-        graph_facts = self.fetch_graph_context(match_ids)
+    def _get_search_summary(self, query: str, pinecone: list, graph: list) -> str:
+        if not pinecone and not graph: return "No data found."
+        context = "### Matches:\n"
+        for m in pinecone:
+            meta = m.get('metadata') or m.get('meta', {})
+            context += f"- {meta.get('name')} ({meta.get('type')}): {meta.get('city', '')}\n"
+            
+        context += "\n### Connections:\n" + "\n".join([f"- {f['source_id']} --[{f['rel']}]--> {f['name']} ({f['desc']})" for f in graph])
         
-        print("\n--- [STEP 2] Context from Neo4j Graph ---")
-        print(json.dumps(graph_facts, indent=2))
-        print("-----------------------------------------\n")
+        resp = self.openai_client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": "Summarize data for user query."},
+                {"role": "user", "content": f"Query: {query}\nData:\n{context}"}
+            ]
+        )
+        return resp.choices[0].message.content
 
-        # --- STEP 3: SUMMARIZE the context ---
-        summary = self._get_search_summary(query, matches, graph_facts)
-        
-        print("\n--- [STEP 3] Generated Search Summary ---")
-        print(summary)
-        print("-----------------------------------------\n")
-
-        # --- STEP 4: BUILD the final prompt ---
-        prompt_messages = self.build_prompt_with_summary(query, summary, history)
-        
-        print("\n--- [STEP 4] Final Prompt to LLM ---")
-        print(json.dumps(prompt_messages, indent=2))
-        print("------------------------------------\n")
-
-        # --- STEP 5: GENERATE the final answer ---
-        print("\n--- [STEP 5] Streaming Assistant Answer ---\n")
+    def _handle_general_chat(self, query: str) -> Generator[str, None, None]:
         stream = self.openai_client.chat.completions.create(
             model=self.chat_model,
-            messages=prompt_messages,
+            messages=[{"role": "system", "content": "You are a polite travel assistant."}, {"role": "user", "content": query}],
             stream=True
         )
+        for chunk in stream: yield chunk.choices[0].delta.content or ""
+
+    def _handle_travel_search(self, query: str, session_id: str, history: list) -> Generator[str, None, None]:
+        candidates = self.pinecone_query(query, top_k=20)
+        passages = [
+            {"id": c["id"], "text": c["metadata"].get("semantic_text", "")[:500], "meta": c["metadata"]} 
+            for c in candidates
+        ]
+        
+        final_matches = []
+        if passages:
+            req = RerankRequest(query=query, passages=passages)
+            final_matches = self.ranker.rerank(req)[:5]
+            logging.info(f"Re-ranking: {len(candidates)} -> {len(final_matches)}")
+
+        match_ids = [m["id"] for m in final_matches]
+        graph_facts = self.fetch_graph_context(match_ids)
+        
+        summary = self._get_search_summary(query, final_matches, graph_facts)
+        
+        clean_history = []
+        for msg in (history or []):
+            role = "assistant" if msg.get("role") == "bot" else msg.get("role", "user")
+            clean_history.append({"role": role, "content": msg.get("content", "")})
+        
+        msgs = [{"role": "system", "content": "You are VietBot. Answer using context. Think in <thinking> tags."}] + \
+               clean_history + \
+               [{"role": "user", "content": f"Context: {summary}\nQuery: {query}"}]
+        
+        stream = self.openai_client.chat.completions.create(
+            model=self.reasoning_model, messages=msgs, stream=True
+        )
+        
+        full_response = ""
         for chunk in stream:
             content = chunk.choices[0].delta.content or ""
+            full_response += content
             yield content
+            
+        self.log_interaction(session_id, query, full_response, match_ids)
 
-
-def main():
-    """Run an interactive chat session."""
-    try:
-        rag_system = HybridRAG()
-        print("🚀 Hybrid Travel Assistant is ready! Type 'exit' to quit.")
-        while True:
-            query = input("\nEnter your travel question: ").strip()
-            if not query:
-                continue
-            if query.lower() in ("exit", "quit"):
-                break
-            print("\n=== Assistant Answer ===\n")
-            for chunk in rag_system.get_answer(query):
-                print(chunk, end="", flush=True)
-            print("\n\n========================\n")
-
-        rag_system.close()
-    except Exception as e:
-        logging.critical(f"A critical error occurred: {e}")
-
+    def get_answer(self, query: str, session_id: str, history: list = None) -> Generator[str, None, None]:
+        if "general" in self._classify_intent(query):
+            yield from self._handle_general_chat(query)
+        else:
+            yield from self._handle_travel_search(query, session_id, history or [])
 
 if __name__ == "__main__":
-    main()
+    rag = HybridRAG()
+    print("Bot Ready. Type exit.")
+    while True:
+        q = input("> ")
+        if q == "exit": break
+        for token in rag.get_answer(q, "console-test"): print(token, end="", flush=True)
+        print()

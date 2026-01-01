@@ -4,7 +4,7 @@ from pyvis.network import Network
 import networkx as nx
 import config
 
-NEO_BATCH = 500  # number of relationships to fetch / visualize
+NEO_BATCH = 500  
 
 driver = GraphDatabase.driver(config.NEO4J_URI, auth=(config.NEO4J_USER, config.NEO4J_PASSWORD))
 
