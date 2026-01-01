@@ -5,7 +5,6 @@
 **An advanced AI travel assistant specialized for Vietnam tourism, powered by Hybrid RAG architecture**
 
 [![FastAPI](https://img.shields.io/badge/FastAPI-009688?style=for-the-badge&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
-[![React](https://img.shields.io/badge/React-61DAFB?style=for-the-badge&logo=react&logoColor=black)](https://reactjs.org/)
 [![OpenAI](https://img.shields.io/badge/OpenAI-412991?style=for-the-badge&logo=openai&logoColor=white)](https://openai.com/)
 [![Neo4j](https://img.shields.io/badge/Neo4j-008CC1?style=for-the-badge&logo=neo4j&logoColor=white)](https://neo4j.com/)
 [![Pinecone](https://img.shields.io/badge/Pinecone-000000?style=for-the-badge&logo=pinecone&logoColor=white)](https://www.pinecone.io/)
@@ -104,13 +103,6 @@ Response → Streamed back to Frontend
 User Register → Password Hashed (Bcrypt) → User Login → JWT Token Issued
 ```
 
-**Protection**: 
-- Every chat request requires a valid Bearer Token header
-- Fixed 72-byte Bcrypt limitation by migrating from `passlib` to raw `bcrypt`
-- Enforces security without compromising functionality
-
----
-
 ## 💻 Technology Stack
 
 ### Backend (Python & FastAPI)
@@ -134,15 +126,6 @@ User Register → Password Hashed (Bcrypt) → User Login → JWT Token Issued
 | **Graph DB** | neo4j | Stores relationships (City → HAS_HOTEL → Hotel). Vectors find "similar" things; Graphs find "connected" things |
 | **Re-Ranker** | flashrank | Lightweight, local re-ranking library. Instead of calling a paid API (like Cohere), runs a tiny BERT model locally to filter results essentially for free |
 
-### Frontend (React & Vite)
-
-| Library | Purpose | Justification |
-|---------|---------|---------------|
-| **vite** | Build Tool | Significantly faster startup and hot-reload times compared to Create-React-App |
-| **react-markdown** | Text Rendering | Allows the bot to output Bold, Lists, and Itineraries cleanly instead of raw text |
-| **App.css** | Styling | Custom CSS implementing **Glassmorphism** (frosted glass) and gradients for a modern aesthetic |
-
----
 
 ## 🚀 Features
 
@@ -172,12 +155,11 @@ User Register → Password Hashed (Bcrypt) → User Login → JWT Token Issued
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/vietbot.git
-cd vietbot/backend
+https://github.com/guniyal24/ai-hybrid-chat.git
 
 # Create virtual environment
 python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
+source venv/bin/activate  
 
 # Install dependencies
 pip install -r requirements.txt
@@ -207,7 +189,6 @@ cd ../frontend
 npm install
 
 # Create .env file
-echo "VITE_API_URL=http://localhost:8000" > .env
 
 # Run development server
 npm run dev
@@ -249,76 +230,3 @@ CREATE (c)-[:HAS_HOTEL]->(h)
    - "Find luxury hotels in Ho Chi Minh City"
 3. **Get Recommendations**: VietBot will search both vector and graph databases to provide accurate, contextual recommendations
 4. **Enjoy Streaming Responses**: Watch as the AI generates your personalized travel plan in real-time
-
----
-
-## 🔐 API Endpoints
-
-### Authentication
-- `POST /register` - Register new user
-- `POST /login` - Login and receive JWT token
-
-### Chat
-- `POST /chat` - Send message (requires Bearer token)
-- `GET /chat/history` - Retrieve chat history
-
-### Health
-- `GET /health` - Check API status
-
----
-
-## 🎯 Future Enhancements
-
-- [ ] Multi-language support (Vietnamese, English, French)
-- [ ] Image recognition for landmark identification
-- [ ] Integration with booking APIs
-- [ ] User preference learning and personalization
-- [ ] Mobile app (React Native)
-- [ ] Voice interface support
-
----
-
-## 🤝 Contributing
-
-Contributions are welcome! Please feel free to submit a Pull Request.
-
-1. Fork the repository
-2. Create your feature branch (`git checkout -b feature/AmazingFeature`)
-3. Commit your changes (`git commit -m 'Add some AmazingFeature'`)
-4. Push to the branch (`git push origin feature/AmazingFeature`)
-5. Open a Pull Request
-
----
-
-## 📄 License
-
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
----
-
-## 👨‍💻 Author
-
-**Your Name**
-
-- GitHub: [@yourusername](https://github.com/yourusername)
-- LinkedIn: [Your LinkedIn](https://linkedin.com/in/yourprofile)
-
----
-
-## 🙏 Acknowledgments
-
-- OpenAI for GPT-4o and embeddings
-- Pinecone for vector database services
-- Neo4j for graph database technology
-- FastAPI community for excellent documentation
-- All contributors and testers
-
----
-
-<div align="center">
-
-**Made with ❤️ for Vietnam Tourism**
-
-⭐ Star this repo if you find it helpful!
-
-</div>
